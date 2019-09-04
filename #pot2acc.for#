@@ -1,0 +1,887 @@
+c
+c           TTTTTEEEEEESSSSSSSTTTTTTTT!!!!!!!!!!!!!
+c
+c	programm pot2acc
+c	Modification of Rick Bethlem's readpa.for
+c	Calculates acceleration in x,y, and z-direction of specific molecule
+c	in specific quantum state from the SIMION potential array.
+c	First the *.pa file is read, then:
+c		* the part of the potential that is needed for the calculation
+c		  is extracted, 
+c		* the Electric field is is calculated from the "smoothed" curves
+c		* the Stark energy is calculated
+c		* acceleration is calculated similar to electric field from V
+c		* x, y, z acceleration is written to seperate files.	
+c	
+c	
+c
+c	Last modification: 17-4-2000
+c
+        IMPLICIT none
+c
+        real*8  fnew
+        character*128 filename1,filename2,arg,xxx
+        character*8 fchar 
+        equiVALENCE (fnew,fchar)
+        integer inunit,outunit
+	integer   IXMAX,IYMAX,IZMAX,IXRED,IYRED,IZRED
+        PARAMETER(IXMAX=800,IYMAX=200,IZMAX=200)
+        PARAMETER(IXRED=800,IYRED=100,IZRED=100)
+c
+        real*8  vdata(IXMAX,IYMAX,IZMAX)
+        real*8  voltage(IXRED,IYRED,IZRED),V_scaling
+	real*8  E_x(IXRED,IYRED,IZRED),E_y(IXRED,IYRED,IZRED)
+	real*8  E_z(IXRED,IYRED,IZRED),E_Stark(IXRED,IYRED,IZRED)
+	real*8  a_x(IXRED,IYRED,IZRED),a_y(IXRED,IYRED,IZRED)
+	real*8  a_z(IXRED,IYRED,IZRED)
+        real*8  estark(8)
+	real*8  etemp
+	logical lens(IXMAX,IYMAX,IZMAX)
+c
+	real*8 dummy,dummycap,dummyfit,error
+        character*128 dummychar
+c
+c	EXTERNAL E02ADF, E02AEF, E02AHF, E02AKF
+c
+c         new with SLATEC!!!!!!!!!!!!!!!!!!!!!!!
+        EXTERNAL DPOLFT,DPCOEF 
+c
+	INTEGER MMAX, KP1MAX,NDEG,IFAIL,IFAIL1,IFAIL2
+     .        ,KK,NROWS
+	PARAMETER (MMAX = 200, KP1MAX =100, NROWS=KP1MAX)
+c
+	INTEGER KP1,N
+c
+c           new SLATEC
+c
+        REAL*8 A3(3*MMAX+3*KP1MAX)
+        REAL*8 EPS
+c         unused, WORK1, WORK2
+	REAL*8 A(KP1MAX),S(KP1MAX),W(MMAX),W2(MMAX),R(MMAX),
+     .         WORK1(3*MMAX),
+     .         WORK2(2*KP1MAX),AK(KP1MAX),FIT(MMAX),ADIF(KP1MAX)
+c
+        REAL*8 C,LL,STATUS
+c
+	REAL*8 X(MMAX),DX(MMAX), Y(MMAX), XCAP(MMAX), FY(MMAX)
+c
+	REAL*8 XMAX,XMIN,PATM1
+c
+	integer iarg,iargc,icm,indx
+c
+	integer i,j,k,l
+	integer ibegin,ieinde,jbegin,jeinde,kbegin,keinde
+	integer ni,nj,nk,nx,ny,nz
+c
+	real*8  mass,lambda,dipole,orientation,threshold
+	real*8  gu,xbegin,xeinde,ybegin,yeinde,zbegin,zeinde        
+c
+	real*8  wavnr_2_J,mm_2_m,amu,deb_2_Cm,Vperm_2_kVpercm      
+	real*8  convert,dipoleconvert  
+c
+	real*8  Emin,Emax,Wmin,Wmax
+c
+c
+c
+c default values (for gu/mm =1)
+c	
+	gu = 1.0
+	ibegin=0
+	ieinde=0
+	jbegin=0
+	jeinde=0
+	kbegin=0
+	keinde=0
+c
+c Read arguments start-line
+c
+        if (iargc().eq.0) then
+          write(*,*) 'Usage: pot2acc -i1 "file SIMION potential" '
+          write(*,*) '               -i2 "input file molecule" '
+c          write(*,*) '(mass,fit E_stark, gu/mm, sel. part of potential)'         
+   	stop
+c
+	else
+          icm=0
+          iarg = 0
+          indx = iargc()
+            do while (iarg .lt. indx)
+	      iarg = iarg + 1
+	      call getarg(iarg,arg)
+              if (arg .eq. '-i1') then
+                iarg = iarg + 1
+                call getarg(iarg,filename1)
+
+              elseif (arg .eq. '-i2') then
+                iarg = iarg + 1
+	        call getarg(iarg,filename2)
+              end if
+	   end do
+      	end if
+c
+c    End Read Arguments
+c
+c
+c    Read mass, Fit constants Stark-curve, gu/mm, selected part of V(x,y,z)
+c    from FILENAME2
+c
+	write(*,*) 'Reading: ', FILENAME2
+        inunit=34
+        open(unit=inunit,file=FILENAME2) 
+        read(inunit,*) dummychar
+        read(inunit,*) dummychar
+        read(inunit,*) dummychar
+c
+        read(inunit,*) mass		! Mass molecules
+	read(inunit,*) lambda    	! First order pertubation 
+	read(inunit,*) dipole		! below threshold
+	read(inunit,*) orientation      ! average orientation
+	read(inunit,*) threshold        ! 
+	read(inunit,*) estark(1)	! Fit Stark energy curve cm-1/(kV/cm)
+	read(inunit,*) estark(2)	! above threshold
+	read(inunit,*) estark(3)
+	read(inunit,*) estark(4)
+	read(inunit,*) estark(5)
+	read(inunit,*) estark(6)
+	read(inunit,*) estark(7)
+c
+        read(inunit,*) dummychar
+        read(inunit,*) dummychar
+        read(inunit,*) dummychar
+c
+	read(inunit,*) xbegin		! Selected part from input potential	
+	read(inunit,*) xeinde		! array.
+	read(inunit,*) ybegin
+	read(inunit,*) yeinde
+	read(inunit,*) zbegin
+	read(inunit,*) zeinde
+c
+        read(inunit,*) dummychar
+        read(inunit,*) dummychar
+        read(inunit,*) dummychar
+c
+        read(inunit,*) gu		!#gridunits/mm.
+	read(inunit,*) V_scaling
+        write (*,*) 'end reading'
+      close(inunit)
+c
+	write(*,*)
+	write(*,*) 'Mass               :',mass
+	write(*,*) 'InversionSplitting : ',lambda
+	write(*,*) 'dipole moment      :',dipole
+	write(*,*) 'MOmega/J(J+1)      : ',orientation
+	write(*,*) 'Threshold field    : ',threshold
+	write(*,*) 'Estark(1)          : ',estark(1)
+	write(*,*) 'Estark(2)          : ',estark(2)
+	write(*,*) 'Estark(3)          : ',estark(3)
+	write(*,*) 'Estark(4)          : ',estark(4)
+	write(*,*) 'Estark(5)          : ',estark(5)
+	write(*,*) 'Estark(6)          : ',estark(6)
+	write(*,*) 'Estark(7)          : ',estark(7)
+        write(*,*) 'gu                 : ',gu
+        write(*,*) 'V_scaling          : ',V_scaling
+c
+c    End read mass...	
+c
+c  CONVERSION BETWEEN CM-1 PER MM TO M PER S^2 (Includes mass of molecule!!)
+c	
+	wavnr_2_J       =   1.986447e-23
+	mm_2_m          =   1e-3
+	amu             =   1.660540210e-27
+	convert         =   wavnr_2_J/(mm_2_m*mass*amu)
+c
+c  CONVERSION FROM DEBYE TO CM-1 PER kV/CM
+c
+	deb_2_Cm          =   3.3358e-30
+	Vperm_2_kVpercm   =   1e5
+c
+	dipoleconvert     =   deb_2_Cm * Vperm_2_kVpercm / 1.986447e-23
+c
+	write(*,*) ''
+	write(*,*) 'convert        :',convert
+	write(*,*) 'dipoleconvert  : ',dipoleconvert
+      	write(*,*) 'gu/mm          :',gu
+c
+	ibegin  = dint(xbegin)		! convert float to integer
+	ieinde  = dint(xeinde)
+   	jbegin  = dint(ybegin)
+	jeinde  = dint(yeinde)
+ 	kbegin  = dint(zbegin)
+	keinde  = dint(zeinde)
+c
+	if((ibegin.eq.0).or.(jbegin.eq.0).or.(kbegin.eq.0).or.
+     .     (ieinde.eq.0).or.(jeinde.eq.0).or.(keinde.eq.0)) then
+	  goto 90
+	endif
+c
+
+c
+	ni = ieinde-ibegin+1
+	nj = jeinde-jbegin+1
+	nk = keinde-kbegin+1
+c
+c    Read SIMION potential from FILENAME1
+      call readpa(vdata,lens,IXMAX,IYMAX,IZMAX,nx,ny,nz,
+     .                                    filename1,V_scaling)
+c
+	write(*,*) 'Maximum dimensions of voltage array:'
+      	write(*,*) 'nx = ',nx,'  ny = ',ny,'  nz = ',nz
+      	if((ibegin.lt.1).or.(ibegin.gt.ieinde).or.(ieinde.gt.nx).or.
+     .     (jbegin.lt.1).or.(jbegin.gt.jeinde).or.(jeinde.gt.ny).or.
+     .     (kbegin.lt.0).or.(kbegin.gt.keinde).or.(keinde.gt.nz)) then
+	   goto 70
+      	endif 
+	write(*,*) ''
+	write(*,*) 'Segment of potential in use:'
+	write(*,*) 'x ',ibegin,ieinde
+	write(*,*) 'y ',jbegin,jeinde
+	write(*,*) 'z ',kbegin,keinde
+c START MATH HIER:
+c
+c REDUCING THE ARRAY
+c
+	call rdc(vdata,lens,IXMAX,IYMAX,IZMAX,ibegin,jbegin,kbegin,
+     . ni,nj,nk,voltage,IXRED,IYRED,IZRED)
+c
+c CHEBYSHEV ROUTINE UIT NAG: interpolation Voltages in X,Y,Z-direction
+c
+	write(*,*) ''
+	write(*,*) 'STARTING CALCULATION ON X'
+c
+c
+	KP1=dint(1.1*sqrt(dfloat(ni)))
+c
+	write(*,*) 'USING',KP1-1,'th DEGREE FIT'	
+c
+	open(unit=outunit,file='test.dat',
+     .                  status='unknown')
+c
+	  do j=1,nj
+	    do k=1,nk
+	      do i=1,ni
+		Y(i)=voltage(i,j,k)
+		X(i)=dfloat(i)/gu
+c                write(*,*) X(i), Y(i)
+		W(i)=1D0
+                W2(i)=W(i)*W(i)
+	      end do
+	      N=ni	     
+c
+c Least squares polynomial fit to arbitrary set of data. Input: X,Y data set
+c Output: A3 array:
+c
+              KK=KP1-1  !degree of the polynomial
+              IFAIL2=0
+              EPS=0D0
+              call DPOLFT( N, X, Y, W2, KK, NDEG, EPS,
+     .           R, IFAIL1, A3, IFAIL2 )
+c
+c            then the coefficients:
+c            Who cares? Thus commented
+c              C=0D0
+c              STATUS=0D0
+c              call DPCOEF (KK, C, A, A3, STATUS)
+c              do l=1,KP1
+c                 write (*,*) A(l)
+c              end do
+c
+c   GETTING THE FIRST DERIVATIVE: Electric field E_x(i,j,k)
+c   for the same price, DP1VLU gives "obs.-calc."!
+c
+	      do i=1,ni
+                IFAIL=0
+                call DP1VLU(KK,1,X(i),FY(i),DX(i),A3,IFAIL)
+                write (outunit,*) i,j,k,Y(i)-FY(i) !write "obs.-calc."
+	        E_x(i,j,k) = DX(i)
+c                write (*,*) 'E ',i,E_x(i,j,k)
+	      end do      ! loop i
+	    end do        ! loop k
+	  end do          ! loop j
+	close(outunit)
+c 
+        write(*,*) 'STARTING CALCULATION ON Y'
+        KP1=dint(1.1*sqrt(dfloat(nj)))
+        write(*,*) 'USING',KP1-1,'th DEGREE FIT'
+c
+        do i=1,ni
+           do k=1,nk
+              do j=1,nj
+                 Y(j)=voltage(i,j,k)
+                 X(j)=dfloat(j)/gu
+                 W(j)=1.
+                 W2(j)=W(j)*W(j)
+              end do
+              N=nj
+c
+c Least squares polynomial fit to arbitrary set of data. Input: X,Y data set
+c
+              KK=KP1-1
+              IFAIL2=0
+              EPS=0D0
+              call DPOLFT( N, X, Y, W2, KK, NDEG, EPS,
+     .           R, IFAIL1, A3, IFAIL2 )
+c   GETTING THE FIRST DERIVATIVE: Electric field E_x(i,j,k)
+c
+              do j=1,nj
+                 IFAIL=0
+                 call DP1VLU(KK,1,X(j),FY(j),DX(j),A3,IFAIL)
+                 E_y(i,j,k) = DX(j)
+c                write (*,*) 'E ',E_x(i,j,k)
+              end do            ! loop j
+           end do               ! loop k
+        end do                  ! loop i
+c
+        write(*,*) 'STARTING CALCULATION ON Z'
+        KP1=dint(1.1*sqrt(dfloat(nk)))
+        write(*,*) 'USING',KP1-1,'th DEGREE FIT'
+c     
+        do i=1,ni
+           do j=1,nj
+              do k=1,nk
+                 Y(k)=voltage(i,j,k)
+                 X(k)=dfloat(k)/gu
+                 W(k)=1.
+                 W2(k)=W(k)*W(k)
+              end do
+              N=nk
+c     
+c Least squares polynomial fit to arbitrary set of data. Input: X,Y data set
+c
+              KK=KP1-1
+              IFAIL2=0
+              EPS=0D0
+              call DPOLFT( N, X, Y, W2, KK, NDEG, EPS,
+     .           R, IFAIL1, A3, IFAIL2 )
+c   GETTING THE FIRST DERIVATIVE: Electric field E_x(i,j,k)
+c   for the same price, DP1VLU gives "obs.-calc."!
+c
+              do k=1,nk
+                 IFAIL=0
+                 call DP1VLU(KK,1,X(k),FY(k),DX(k),A3,IFAIL)
+                 E_z(i,j,k) = DX(k)
+              end do            ! loop k
+           end do               ! loop j
+        end do                  ! loop i
+c
+c XXXXXXXXXXXXXXXXXXXXx END ELECTRIC FIELD XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+c
+        write(*,*) 'ADDING XYZ'
+c
+c  DERIVATIVES (Electric field in X,Y,Z direction) ARE CALCULATED IN VOLTS
+c  PER MM MULTIPLYING WITH 0.01 GIVES KILOVOLTS PER CENTIMETRE
+c
+c  THUS W_Stark(=Stark Energy) IN CM-1
+c
+        Emin  =  1D59
+        Emax  = -1D59
+        Wmin  =  1D59
+        Wmax  = -1D59
+c     
+        do i=1,ni
+           do j=1,nj
+              do k=1,nk
+c     
+          etemp = 0.01*sqrt( E_x(i,j,k)*E_x(i,j,k) +
+     .        E_y(i,j,k)*E_y(i,j,k) + E_z(i,j,k)*E_z(i,j,k))
+c     
+          if (etemp.le.threshold) then
+             E_Stark(i,j,k) = sqrt((0.5*(lambda))**2 +
+     .        (etemp*dipole*dipoleconvert)**2*(orientation)**2)
+          else
+             E_Stark(i,j,k) = estark(1) + etemp*(estark(2) +
+     .        etemp*(estark(3) + etemp*(estark(4) +etemp*(estark(5)+
+     .        etemp*(estark(6)+etemp*(estark(7)))))))
+                 end if
+c
+                 if(etemp.gt.Emax) then
+                    Emax=etemp
+                 endif
+c
+                 if(etemp.lt.Emin) then
+                    Emin=etemp
+                 endif
+c
+                 if(E_Stark(i,j,k).gt.Wmax) then
+                    Wmax=E_Stark(i,j,k)
+                 endif
+c
+                 if(E_Stark(i,j,k).lt.Wmin) then
+                    Wmin=E_Stark(i,j,k)
+                 endif
+c
+              end do            ! loop k
+           end do               ! loop j
+        end do                  ! loop i
+c
+        write(*,*) ''
+        write(*,*) 'Electric field:'
+        write(*,*) 'MAX. ',Emax, '     kV/cm'
+        write(*,*) 'MIN.  ',Emin, '    kV/cm'
+        write(*,*) ''
+c     
+        write(*,*) ''
+        write(*,*) 'Stark Energy'
+        write(*,*) 'MAX. ',Wmax, '     cm-1'
+        write(*,*) 'MIN.  ',Wmin, '    cm-1'
+        write(*,*) ''
+c     
+c     XXXXXXXXXXXXXXXXXXXXXXXXXXXXX STARK ENERGY XXXXXXXXXXXXXXXXXXXXXXXX
+        write(*,*) 'TAKING DERIVATIVE OF W_Stark, YIELDING ACCELERATION'
+c     
+        write(*,*) 'FIRST X'
+        KP1=dint(1.1*sqrt(dfloat(ni)))
+        write(*,*) 'USING',KP1-1,'th DEGREE FIT'
+c     
+        do j=1,nj
+           do k=1,nk
+              do i=1,ni
+                 Y(i)=E_Stark(i,j,k)
+                 X(i)=dfloat(i)/gu
+                 W(i)=1.
+                 W2(i)=W(i)*W(i)
+              end do
+              N=ni
+c     
+c     Least squares polynomial fit to arbitrary set of data. Input: X,Y data set
+c     
+              KK=KP1-1
+              IFAIL2=0
+              EPS=0D0
+              call DPOLFT( N, X, Y, W2, KK, NDEG, EPS,
+     .             R, IFAIL1, A3, IFAIL2 )
+c     
+c     GETTING THE FIRST DERIVATIVE: acceleration a_x(i,j,k)
+c     
+              do i=1,ni
+                 IFAIL=0
+                 call DP1VLU(KK,1,X(i),FY(i),DX(i),A3,IFAIL)
+c     
+c     CONVERT FROM CM-1/MM TO M/S^2
+c     Note: F=-grad E_stark, minus sign already included!!!!!
+c     
+                 a_x(i,j,k) = -1.0d0*DX(i)*convert
+c     
+              end do            ! loop i
+           end do               ! loop k
+        end do                  ! loop j
+c
+        write(*,*) 'NOW Y'
+        KP1=dint(1.1*sqrt(dfloat(nj)))
+        write(*,*) 'USING',KP1-1,'th DEGREE FIT'
+c     
+        do i=1,ni
+           do k=1,nk
+              do j=1,nj
+                 Y(j)=E_Stark(i,j,k)
+                 X(j)=dfloat(j)/gu
+                 W(j)=1.
+                 W2(j)=W(j)*W(j)                 
+              end do
+              N=nj
+c     
+c     Least squares polynomial fit to arbitrary set of data. Input: X,Y data set
+c     
+              KK=KP1-1
+              IFAIL2=0
+              EPS=0D0
+              call DPOLFT( N, X, Y, W2, KK, NDEG, EPS,
+     .             R, IFAIL1, A3, IFAIL2 )
+c     
+c     GETTING THE FIRST DERIVATIVE: acceleration a_y(i,j,k)
+c     
+              do j=1,nj
+                 IFAIL=0
+                 call DP1VLU(KK,1,X(j),FY(j),DX(j),A3,IFAIL)
+                 a_y(i,j,k) = -1.0d0*DX(j)*convert
+c     
+              end do            ! loop j
+           end do               ! loop k
+        end do                  ! loop i
+c
+        write(*,*) 'AND FINALLY Z'
+        KP1=dint(1.1*sqrt(dfloat(nk)))
+        write(*,*) 'USING',KP1-1,'th DEGREE FIT'
+c     
+        do i=1,ni
+           do j=1,nj
+              do k=1,nk
+                 Y(k)=E_Stark(i,j,k)
+                 X(k)=dfloat(k)/gu
+                 W(k)=1.
+                 W2(k)=W(k)*W(k)
+              end do
+              N=nk
+c     
+c     Least squares polynomial fit to arbitrary set of data. Input: X,Y data set
+c     
+              KK=KP1-1
+              IFAIL2=0
+              EPS=0D0
+              call DPOLFT( N, X, Y, W2, KK, NDEG, EPS,
+     .             R, IFAIL1, A3, IFAIL2 )
+c     
+c     GETTING THE FIRST DERIVATIVE: acceleration a_z(i,j,k)
+c     
+              do k=1,nk
+                 IFAIL=0
+                 call DP1VLU(KK,1,X(k),FY(k),DX(k),A3,IFAIL)
+                 a_z(i,j,k) = -1.0d0*DX(k)*convert
+c     
+              end do            ! loop k
+           end do               ! loop j
+        end do                  ! loop i
+c
+c
+        call write_output(voltage,E_Stark,a_x,a_y,a_z,
+     .       IXRED,IYRED,IZRED,ni,nj,nk)
+c
+c
+c
+      	stop 'normal termination'
+60    	write(*,*) 'error writing'
+70      write(*,*) 'error boundaries'
+80 	write(*,*) 'error initialisation'
+90      write(*,*) 'error selected part potential array'
+      	end 
+c
+c
+c
+c Subroutines:
+c
+c	XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+c	        READHEAD
+c	XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+c
+      	subroutine readhead(inunit,imode,isym,fmaxv,nx,ny,nz,mirror)
+      	IMPLICIT REAL*8 (a-h,o-z)
+      	integer inew
+      	real*8  fnew
+      	character*4 ichar
+      	character*8 fchar
+      	equiVALENCE (inew,ichar)
+      	equiVALENCE (fnew,fchar)
+c
+      	do j=1,4
+		write(*,*) '1'
+         	read(inunit,end=50,err=50) ichar(j:j)
+		write(*,*) '2'
+      	end do
+      	imode=inew
+      	do j=1,4
+         	read(inunit,end=50,err=50) ichar(j:j)
+      	end do
+      	isym=inew
+      	do j=1,8
+         	read(inunit,end=50,err=50) fchar(j:j)
+      	end do
+      	fmaxv=fnew
+      	do j=1,4
+         	read(inunit,end=50,err=50) ichar(j:j)
+      	end do
+      	nx=inew
+      	do j=1,4
+         	read(inunit,end=50,err=50) ichar(j:j)
+      	end do
+      	ny=inew
+      	do j=1,4
+         	read(inunit,end=50,err=50) ichar(j:j)
+      	end do
+      	nz=inew
+      	do j=1,4
+         	read(inunit,end=50,err=50) ichar(j:j)
+      	end do
+      	mirror=inew
+      	return
+50    	write(*,*) 'error in readhead'
+        stop
+      	end 
+
+
+      	subroutine writehead(ounit,imode,isym,fmaxv,nx,ny,nz,mirror)
+      	IMPLICIT REAL*8 (a-h,o-z)
+      	integer ounit
+      	integer inew
+      	real*8  fnew
+      	character*4 ichar
+      	character*8 fchar
+      	equiVALENCE (inew,ichar)
+      	equiVALENCE (fnew,fchar)
+c
+      	inew=imode
+c      	call shuffle(ichar(1:1),4)
+      	do j=1,4
+          	write(ounit,err=50) ichar(j:j)
+      	end do
+      	inew=isym
+c      	call shuffle(ichar(1:1),4)
+      	do j=1,4
+          	write(ounit,err=50) ichar(j:j)
+      	end do
+      	fnew=fmaxv
+c      	call shuffle(fchar(1:1),8) 
+      	do j=1,8
+          	write(ounit,err=50) fchar(j:j)
+      	end do
+      	inew=nx
+c      	call shuffle(ichar(1:1),4)
+      	do j=1,4
+          	write(ounit,err=50) ichar(j:j)
+      	end do
+      	inew=ny
+c      	call shuffle(ichar(1:1),4)
+      	do j=1,4
+          	write(ounit,err=50) ichar(j:j)
+      	end do
+      	inew=nz
+c      	call shuffle(ichar(1:1),4)
+      	do j=1,4
+          	write(ounit,err=50) ichar(j:j)
+      	end do
+      	inew=mirror
+c      	call shuffle(ichar(1:1),4) 
+      	do j=1,4
+          	write(ounit,err=50) ichar(j:j)
+      	end do
+50    	return
+      	end
+
+
+      SUBROUTINE readpa(vdata,lens,IXM,IYM,IZM,nx,ny,nz,filename,V_scal)
+c
+c    reading SIMION potential array, dimensions: nx--nz (max: IXM--IXZ)
+c    note : in de do-loop worden z en x verwisseld!!!
+c	    de randen worden (later) niet gedifferentieerd
+c
+      IMPLICIT REAL*8 (a-h,o-z)
+      real*8  fnew
+      character*8 fchar
+      equiVALENCE (fnew,fchar)
+      character*128 filename
+      integer IXM,IYM,IZM
+      real*8 vdata(IXM,IYM,IZM),V_scal
+      logical lens(IXM,IYM,IZM) 
+      integer nx,ny,nz
+
+      inunit=33
+      open(unit=inunit,file=filename,status='old'
+     .     ,form='UNFORMATTED',access='stream')
+      inquire(unit=inunit,form=fchar)
+      write (*,*) fchar
+c
+      write(*,*) ''
+      write(*,*) 'READING FILE',filename
+c
+c    Read the *.PA SIMION file:
+c
+      call readhead(inunit,imode,isym,fmaxv,nx,ny,nz,mirror)
+      do k=1,nz
+ 	do j=1,ny
+	  do i=1,nx
+	     do l=1,8 
+               read(inunit,end=50,err=50) fchar(l:l)
+             end do
+c             call shuffle(fchar(1:1),8)
+             vdata(i,j,k)=V_scal*fnew
+             if (fnew.ge.fmaxv) then
+               vdata(i,j,k)=V_scal*(fnew-2.0*fmaxv)
+               lens(i,j,k)=.true.
+             end if
+           end do
+	 end do
+      end do
+      close(inunit)
+      return
+50    write(*,*) 'error reading'
+      end
+c
+      subroutine shuffle(data,nbytes)
+      IMPLICIT REAL*8 (a-h,o-z)
+      character data *(*)
+      character*1 save
+c
+      do i=1,int(nbytes/2)
+         save(1:1)=data(nbytes+1-i:nbytes+1-i)
+         data(nbytes+1-i:nbytes+1-i)=data(i:i)
+         data(i:i)=save(1:1)
+      end do
+      return
+      end
+c
+      SUBROUTINE FFORMT(LINE,ISTART,LENGTH,VALUE)
+C     DECODES A FLOATING-POINT NUMBER OF GIVEN FIELD-POSITION & WIDTH
+      implicit real*8 (a-h,o-z)
+      CHARACTER          LINE(145),BUF(20)
+         CHARACTER*20 VBUF
+         CHARACTER*80 SPEC
+         EQUIVALENCE (BUF(1),VBUF)
+         IF (LENGTH.EQ.0) RETURN
+         DO 1 I=ISTART,ISTART+LENGTH-1
+ 1       BUF(I-ISTART+1)=LINE(I)
+      WIDTH=LENGTH
+      WRITE (SPEC,10)       WIDTH
+ 10   FORMAT('(F',        F4.1,')')
+         READ (VBUF,SPEC,ERR=2) VALUE
+      RETURN
+ 2       WRITE (6,11) ISTART-1,(LINE(I),I=2,145)
+ 11      FORMAT (' I CAN''T READ FIELD STARTING AT CHARACTER',I4,' IN TH
+     1IS LINE:'/(1X,72A1))
+         RETURN
+      END
+c
+      subroutine rdc(vdata,lens,IXM,IYM,IZM,ibegin,jbegin,kbegin,ni,nj,
+     >nk,voltage,IXR,IYR,IZR)
+c
+c     Reducing potential array to the size needed fro calculation decelerator
+c
+	integer i,j,k,ibegin,jbegin,kbegin
+	integer IXM,IYM,IZM,IXR,IYR,IZR
+	real*8 vdata(IXM,IYM,IZM),voltage(IXR,IYR,IZR)
+	logical lens(IXM,IYM,IZM)
+	real*8 Vmin,Vmax
+c
+	Vmax=-1D40 
+      	Vmin=+1D40
+c
+         do i=1,ni
+	    do j=1,nj
+	      do k=1,nk
+c	        
+		voltage(i,j,k)=vdata(i+ibegin,j+jbegin,k+kbegin)
+c
+c         Write position of electrodes
+c
+c		if (lens(i+ibegin,j+jbegin,k+kbegin)) then
+c		  write(*,*) 'ELECTRODE AT',i+ibegin,j+jbegin,
+c     .                                   k+kbegin
+c		  write(*,*) 'VOLTAGE',voltage(i,j,k),i,j,k
+c		endif
+c
+		if(voltage(i,j,k).gt.Vmax) then
+		  Vmax=voltage(i,j,k)
+		endif
+c
+		if(voltage(i,j,k).lt.Vmin) then
+		  Vmin=voltage(i,j,k)
+		endif
+c	
+	      end do
+	    end do
+	  end do 
+c
+	  write(*,*) ''
+	  write(*,*) 'ARRAY REDUCED TO ',ni,nj,nk
+	  write(*,*) ''
+	  write(*,*) 'MAX. ',Vmax, 'V'
+	  write(*,*) 'MIN. ',Vmin, 'V'     
+c
+	return
+	end
+
+
+        subroutine write_output(voltage, E_Stark,a_x,a_y,a_z,
+     .                          IXR,IYR,IZR,ni,nj,nk)
+c
+c       Writing results to output files
+c
+      IMPLICIT REAL*8 (a-h,o-z)
+      integer IXR,IYR,IZR,ni,nj,nk
+      real*8 voltage(IXR,IYR,IZR),E_Stark(IXR,IYR,IZR)
+      real*8 a_x(IXR,IYR,IZR),a_y(IXR,IYR,IZR)
+      real*8 a_z(IXR,IYR,IZR)
+      integer oaxunit,oayunit,oazunit,oeunit,ovunit
+      integer ocxyunit,ocxzunit,ocyzunit  
+c
+c	open(unit=ovunit,file='outV.dat',
+c     .                 status='unknown')
+c	write(ovunit,*) ni,nj,nk
+c	do i=1,ni
+c	  do j=1,nj
+c	    do k=1,nk
+c	      write(ovunit,*) i,j,k,voltage(i,j,k)
+c	    end do
+c	  end do
+c	end do
+c	close(ovunit)	
+c
+	open(unit=oeunit,file='../outputhex/outEst.dat',
+     .                 status='unknown')
+	write(oeunit,*) ni,nj,nk
+	do i=1,ni
+	  do j=1,nj
+	    do k=1,nk
+	      write(oeunit,*) i,j,k,E_Stark(i,j,k)
+	    end do
+	  end do
+	end do
+	close(oeunit)
+c
+	open(unit=oaxunit,file='../outputhex/outax.dat',
+     .                  status='unknown')
+	write(oaxunit,*) ni,nj,nk
+	 do i=1,ni
+	   do j=1,nj
+	     do k=1,nk
+	      write(oaxunit,*) i,j,k,a_x(i,j,k)
+	    end do
+	  end do
+	end do
+	close(oaxunit)
+c
+	open(unit=oayunit,file='../outputhex/outay.dat',
+     .                  status='unknown')
+	write(oayunit,*) ni,nj,nk
+	do i=1,ni
+	  do j=1,nj
+	    do k=1,nk
+	      write(oayunit,*) i,j,k,a_y(i,j,k)
+	    end do
+	  end do
+	end do
+	close(oayunit)
+c
+	open(unit=oazunit,file='../outputhex/outaz.dat',
+     .                  status='unknown')
+	write(oazunit,*) ni,nj,nk
+	do i=1,ni
+	  do j=1,nj
+	    do k=1,nk
+	      write(oazunit,*) i,j,k,a_z(i,j,k)
+	    end do
+	  end do
+	end do
+	close(oazunit)
+c	  		
+c   Note: Beam axis values written to disc:
+c
+	open(unit=ocyzunit,file='../outputhex/outcx.dat',
+     .                   status='unknown')
+	 k=(nk+1)/2
+	   j=(nj+1)/2
+            write(*,*) k
+	    do i=1,ni
+	     write(ocyzunit,*) i,E_Stark(i,j,k),a_x(i,j,k)
+	    end do
+	close(ocyzunit)
+c 
+c   Note: maximum field strength values written to disk 
+c
+c	open(unit=ocxzunit,file='../dataio/outcy.dat',
+c     .                   status='unknown')
+c	 k=12
+c	   i=55
+c	    do j=1,nj
+c	     write(ocxzunit,*) voltage(i,j,k),E_Stark(i,j,k),a_y(i,j,k)
+c	    end do
+c	close(ocxzunit)
+c
+c	open(unit=ocxyunit,file='../dataio/outcz.dat',
+c     .                   status='unknown')
+c	 i=55
+c	   j=12
+c	    do k=1,nk
+c	     write(ocxyunit,*) voltage(i,j,k),E_Stark(i,j,k),a_z(i,j,k)
+c	    end do
+c	close(ocxyunit)
+c
+        return
+        end
